@@ -1,0 +1,46 @@
+\section{Introduction}
+\label{sec:intro}
+
+Human pose estimation has made remarkable progress in recent years, driven by powerful architectures and large-scale datasets.
+Modern models achieve impressive accuracy on standard benchmarks and are widely deployed in applications ranging from human--computer interaction to robotics and healthcare.
+Despite this progress, a fundamental limitation remains largely unaddressed: pose estimators often produce confident predictions even when visual evidence is weak, ambiguous, or entirely absent.
+
+This behavior is particularly problematic in safety-critical settings.
+Under occlusion, motion blur, or out-of-distribution conditions, a pose estimator may hallucinate plausible-looking joints that are in fact incorrect.
+Such errors are difficult to detect from accuracy metrics alone and may silently propagate to downstream systems, leading to catastrophic failures.
+These observations raise a crucial yet underexplored question:
+\emph{can a pose estimation model assess whether its own predictions should be trusted?}
+\cite{}
+
+Existing approaches implicitly assume that prediction confidence correlates with correctness.
+Common heuristics, such as heatmap sharpness or prediction variance, are often used as proxies for reliability.
+However, these signals are fundamentally limited, as a model can be highly confident in its hallucinations.
+Moreover, most prior work treats reliability estimation as a byproduct of pose prediction, rather than as a first-class problem in its own right.
+
+In this work, we argue that pose trustworthiness cannot be reliably inferred from a single forward pass.
+Instead, reliability should be assessed through \emph{self-verification}: a pose prediction should be subjected to a series of consistency and solvability tests that probe whether it is stable, geometrically coherent, and physically explainable.
+Crucially, such verification must operate without additional supervision, as ground-truth visibility or trust annotations are rarely available.
+
+Our key insight is that unreliable joints exhibit characteristic failure patterns under self-verification.
+While hallucinated joints may appear stable within a single image, they tend to break equivariance under geometric transformations, become inconsistent across viewpoints, or require implausible articulations to explain.
+Conversely, reliable joints remain stable under transformations that preserve the underlying human configuration.
+
+Based on this insight, we propose a self-verifying framework for human pose estimation that explicitly estimates joint-level trustworthiness alongside pose predictions.
+Rather than imposing additional constraints during inference, we derive supervisory signals for trust estimation by probing the internal consistency of the model's own predictions.
+
+Specifically, we introduce three complementary self-verification mechanisms.
+First, we evaluate \emph{2D equivariant cycle consistency}, measuring whether predicted joints transform consistently under geometric image augmentations.
+Second, we assess \emph{pseudo-view agreement} by lifting predicted poses to 3D and enforcing consistency across synthetic viewpoints induced by random rotations.
+These two signals expose instability and geometric inconsistency that are invisible to single-view confidence measures.
+
+Third, and most importantly, we introduce \emph{kinematic solvability consistency}.
+Instead of enforcing kinematic constraints as priors, we treat kinematics as an explanatory test.
+We ask whether a predicted pose can be explained by a physically plausible articulation with minimal joint effort through a differentiable inverse kinematics model.
+Poses that admit such explanations are deemed trustworthy, while hallucinated joints require excessive deformation or remain unexplained.
+
+The three self-verification signals provide complementary perspectives on pose reliability.
+We conservatively fuse them to generate joint-level pseudo trust labels, which supervise a lightweight verifier head without requiring additional annotations.
+The resulting model predicts both pose and joint-wise trust, enabling selective prediction, failure detection, and risk-aware pose estimation.
+
+Extensive experiments demonstrate that our approach substantially improves failure detection and uncertainty calibration under occlusion and out-of-distribution conditions, while maintaining competitive pose accuracy.
+By reframing reliability as a self-verification problem, we provide a principled and annotation-free pathway toward trustworthy human pose estimation.

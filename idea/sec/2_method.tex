@@ -1,0 +1,138 @@
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem Formulation and Motivation}
+
+Modern human pose estimators are remarkably accurate under standard benchmarks, yet they frequently produce confident predictions even when visual evidence is weak or misleading.
+Such behavior is problematic in downstream applications, where erroneous joints may silently propagate and cause catastrophic failures.
+The central question we ask in this work is therefore not \emph{how accurate} a predicted pose is, but rather:
+\emph{can the model assess whether its own prediction should be trusted?}
+
+We address this question by augmenting a standard pose estimator with a \emph{self-verification mechanism} that estimates joint-level trustworthiness alongside pose predictions.
+Importantly, no supervision is available for trust labels.
+Instead, we exploit the observation that unreliable joints tend to exhibit characteristic instabilities when subjected to consistency and solvability tests.
+Our method operationalizes this idea through three complementary self-verification signals, each probing pose reliability from a different perspective.
+
+
+\subsection{Overview of the Self-Verifying Framework}
+Given an input image $I$, the pose network predicts a 2D pose
+$\hat{\mathbf{p}} = \{\hat{\mathbf{p}}_j\}_{j=1}^J$.
+In parallel, a lightweight verifier head predicts joint-wise trust scores
+$\mathbf{t} = \{t_j\}_{j=1}^J$, where $t_j \in [0,1]$ reflects the model's confidence in joint $j$.
+
+Since ground-truth trust labels are unavailable, we derive supervisory signals through self-verification.
+Specifically, we subject predicted poses to a set of transformations that preserve the underlying human configuration.
+Reliable joints are expected to remain stable under such transformations, whereas hallucinated joints tend to violate consistency or become difficult to explain.
+We exploit this asymmetry to generate joint-level pseudo trust labels.
+
+Our framework instantiates this principle at three levels:
+(i) image-plane equivariance,
+(ii) cross-view geometric consistency, and
+(iii) kinematic solvability.
+Together, these signals provide a rich and complementary characterization of pose reliability.
+
+\subsection{2D Equivariant Cycle Consistency}
+We first examine reliability in the image plane.
+Under geometric image transformations, such as rotation, scaling, or flipping, the physical pose of the human subject remains unchanged.
+Consequently, joint predictions should transform equivariantly with the image.
+
+Let $g(\cdot)$ denote a geometric transformation applied to the input image, producing $I_g = g(I)$.
+The pose estimator predicts $\hat{\mathbf{p}}$ from $I$ and $\hat{\mathbf{p}}_g$ from $I_g$.
+If a joint is reliably inferred from visual evidence, its predicted location in the augmented image should coincide with the transformed original prediction:
+\begin{equation}
+\hat{\mathbf{p}}_{g,j} \approx g(\hat{\mathbf{p}}_j).
+\end{equation}
+
+We therefore define a joint-wise cycle inconsistency score:
+\begin{equation}
+s^{\mathrm{cyc}}_j = \left\| g(\hat{\mathbf{p}}_j) - \hat{\mathbf{p}}_{g,j} \right\|_2.
+\end{equation}
+
+Intuitively, joints that are inferred primarily from strong visual cues remain stable across coordinate systems, while joints inferred by hallucination or weak priors exhibit increased variability.
+We convert this inconsistency into a soft trust signal:
+\begin{equation}
+\tilde{t}^{\mathrm{cyc}}_j = \exp(-\alpha s^{\mathrm{cyc}}_j),
+\end{equation}
+which serves as a first estimate of joint reliability.
+
+\subsection{Pseudo-View Agreement via 2D--3D--2D Consistency}
+Cycle consistency alone cannot identify errors that are self-consistent within a single view.
+A pose may appear stable in the image plane while being geometrically implausible in three dimensions.
+To expose such failure modes, we introduce pseudo-view agreement.
+
+Starting from the predicted 2D pose $\hat{\mathbf{p}}$, we lift it to a 3D pose
+$\hat{\mathbf{P}} = \mathcal{L}(\hat{\mathbf{p}})$ using a pose lifting network $\mathcal{L}$.
+We then synthesize alternative viewpoints by applying a random 3D rotation $R$ to the lifted pose and projecting it back to the image plane:
+\begin{equation}
+\hat{\mathbf{p}}^{R} = \Pi(R\hat{\mathbf{P}}),
+\end{equation}
+where $\Pi(\cdot)$ denotes orthographic projection.
+
+The pseudo-view pose $\hat{\mathbf{p}}^{R}$ represents how the same human body would appear under a different camera viewpoint.
+We compare this geometric prediction with the pose predicted directly from the augmented image:
+\begin{equation}
+s^{\mathrm{view}}_j = \left\| \hat{\mathbf{p}}^{R}_j - \hat{\mathbf{p}}_{g,j} \right\|_2.
+\end{equation}
+
+Joints that lack geometric support tend to amplify inconsistencies across pseudo-views, as even small viewpoint changes expose underlying structural errors.
+We again convert this disagreement into a trust signal:
+\begin{equation}
+\tilde{t}^{\mathrm{view}}_j = \exp(-\beta s^{\mathrm{view}}_j).
+\end{equation}
+
+\subsection{Kinematic Solvability as Self-Verification}
+Geometric consistency alone does not guarantee that a pose is physically explainable.
+We therefore introduce a third verification signal that probes kinematic plausibility from a complementary perspective.
+
+Rather than imposing hard kinematic constraints, we treat kinematics as an \emph{explanatory test}.
+Specifically, we ask whether a predicted pose can be explained by a physically plausible articulation with minimal joint effort.
+
+We parameterize the human skeleton using joint angles $\boldsymbol{\theta}$ and per-instance bone scales $\mathbf{s}$.
+A differentiable forward kinematics (FK) function produces joint locations:
+\begin{equation}
+\mathbf{P}(\boldsymbol{\theta}, \mathbf{s}) = \mathrm{FK}(\boldsymbol{\theta}, \mathbf{s}).
+\end{equation}
+
+Given the lifted pose $\hat{\mathbf{P}}$, we solve a lightweight inverse kinematics (IK) problem:
+\begin{equation}
+\min_{\boldsymbol{\theta}, \mathbf{s}}
+\sum_j \left\| \mathbf{P}_j(\boldsymbol{\theta}, \mathbf{s}) - \hat{\mathbf{P}}_j \right\|_2^2
++ \lambda \|\boldsymbol{\theta}\|_2^2.
+\end{equation}
+
+The first term encourages faithful reconstruction of the predicted pose, while the second term embodies a minimal-effort principle, favoring explanations that require small and coordinated joint motions.
+If a pose admits such an explanation, it is deemed kinematically solvable.
+Conversely, hallucinated joints often require excessive deformation or fail to be reconstructed accurately.
+
+We decompose the final reconstruction residual into joint-wise contributions $e_j$, which quantify the local cost of explaining each joint.
+This yields a kinematic inconsistency score:
+\begin{equation}
+s^{\mathrm{kin}}_j = e_j,
+\end{equation}
+and a corresponding trust estimate:
+\begin{equation}
+\tilde{t}^{\mathrm{kin}}_j = \exp(-\gamma s^{\mathrm{kin}}_j).
+\end{equation}
+
+\subsection{Trust Fusion and Training Objective}
+Each verification signal captures a distinct aspect of pose reliability.
+To obtain a conservative estimate of joint trustworthiness, we fuse the three signals by selecting the most pessimistic assessment:
+\begin{equation}
+\tilde{t}_j = \min \left(
+\tilde{t}^{\mathrm{cyc}}_j,
+\tilde{t}^{\mathrm{view}}_j,
+\tilde{t}^{\mathrm{kin}}_j
+\right).
+\end{equation}
+
+A verifier head predicts joint-wise trust scores $t_j$, which are supervised by $\tilde{t}_j$ using a regression loss:
+\begin{equation}
+\mathcal{L}_{\mathrm{trust}} = \sum_j \left| t_j - \tilde{t}_j \right|.
+\end{equation}
+
+The final training objective combines standard pose estimation loss with the trust supervision:
+\begin{equation}
+\mathcal{L} = \mathcal{L}_{\mathrm{pose}} + \lambda \mathcal{L}_{\mathrm{trust}}.
+\end{equation}
+
+Notably, the self-verification signals supervise only the verifier head and do not directly constrain pose predictions, preventing error amplification during training.

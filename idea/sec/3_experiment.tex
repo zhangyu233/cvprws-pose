@@ -1,0 +1,133 @@
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Goals and Evaluation Protocol}
+We evaluate our self-verifying pose estimator from two perspectives:
+\textbf{(i) pose accuracy} under standard benchmarks, and \textbf{(ii) trustworthiness}---whether the predicted trust scores identify failures, calibrate correctness, and enable risk-aware (selective) prediction.
+Unless otherwise stated, we train on COCO train2017 and report results on COCO val2017 as in-distribution (ID) evaluation, and on occlusion/ood benchmarks as stress tests.
+
+\subsection{Datasets}
+\paragraph{In-distribution (ID).}
+\textbf{COCO Keypoints} (train2017/val2017) is used for training and standard evaluation.
+
+\paragraph{Occlusion and crowding stress tests.}
+We evaluate robustness and reliability under severe occlusions on \textbf{OCHuman}, and under crowded multi-person scenes on \textbf{CrowdPose}.
+
+\paragraph{Out-of-distribution (OOD) transfer.}
+To test cross-dataset generalization, we additionally evaluate on \textbf{MPII} (and optionally \textbf{PoseTrack} for motion blur/video).
+All models are trained on COCO and directly tested on the target dataset without finetuning unless specified.
+
+\paragraph{Synthetic corruptions.}
+Following common robustness protocols, we apply controlled image corruptions (Gaussian noise, motion blur, JPEG artifacts, low-light/gamma, random occluder blocks) to COCO val2017 with increasing severity to produce reliability-vs-corruption curves.
+
+\subsection{Metrics}
+\paragraph{Pose accuracy.}
+We report standard \textbf{OKS-based AP} on COCO, and the official AP metrics on OCHuman and CrowdPose.
+
+\paragraph{Joint failure detection.}
+We define a joint as failed if its normalized error exceeds a threshold:
+\begin{equation}
+y_j = \mathbb{1}\left[\frac{\|\hat{\mathbf{p}}_j-\mathbf{p}^{*}_j\|_2}{\sqrt{A_{\mathrm{bbox}}}} > \tau\right],
+\end{equation}
+where $A_{\mathrm{bbox}}$ is the person bounding-box area.
+Given predicted trust $t_j$, we use failure score $s_j = 1-t_j$ and report \textbf{AUROC} and \textbf{AUPR}.
+
+\paragraph{Risk--coverage (selective pose).}
+We rank joints by trust and retain the top-$c$ fraction (coverage).
+Risk is measured as the mean normalized error over retained joints:
+\begin{equation}
+\mathrm{Risk}(c)=\frac{1}{|\mathcal{S}_c|}\sum_{j\in\mathcal{S}_c}\frac{\|\hat{\mathbf{p}}_j-\mathbf{p}^{*}_j\|_2}{\sqrt{A_{\mathrm{bbox}}}}.
+\end{equation}
+We plot \textbf{Risk--Coverage curves} and summarize with \textbf{AURC} (lower is better).
+
+\paragraph{Calibration.}
+We evaluate how well trust aligns with correctness using \textbf{ECE} (Expected Calibration Error) computed over joint correctness events (based on the same failure definition) and visualize reliability diagrams.
+
+\subsection{Baselines and Comparisons}
+\paragraph{Pose backbones.}
+We instantiate our verifier on a fixed pose backbone (e.g., HRNet/ViTPose/RTMPose) to isolate the effect of self-verification.
+
+\paragraph{Confidence heuristics.}
+We compare against commonly used confidence proxies:
+(i) \textbf{heatmap peak} (max response),
+(ii) \textbf{heatmap entropy} (distribution sharpness),
+and (iii) \textbf{OKS-inspired internal scores} when available.
+
+\paragraph{Uncertainty estimation baselines.}
+We compare with uncertainty methods that require multiple stochastic predictions:
+(i) \textbf{MC Dropout} and (ii) \textbf{Deep Ensembles} (if computationally feasible).
+For fair comparison, we report both reliability metrics and inference-time cost.
+
+\paragraph{Ablation baselines.}
+We include model variants using only a subset of verification signals: \textbf{Cycle-only}, \textbf{Pseudo-view-only}, \textbf{IK-only}, and their combinations.
+
+\subsection{Implementation Details}
+We describe training schedules, augmentations, verifier architecture, and the differentiable IK solver configuration (number of iterations, step size, regularization weight).
+We report inference overhead in ms/image and parameter count of the verifier head.
+
+\subsection{Main Results}
+\paragraph{Pose accuracy.}
+We first report OKS-AP on COCO and AP on OCHuman/CrowdPose to verify that adding self-verification preserves competitive accuracy.
+
+\paragraph{Trustworthiness under occlusion and crowds.}
+We then report joint failure detection (AUROC/AUPR), risk--coverage (AURC), and calibration (ECE) on COCO, OCHuman, and CrowdPose.
+\textbf{Table~\ref{tab:main}} summarizes the main results.
+
+\begin{table}[t]
+\centering
+\caption{Main results. We report pose accuracy (AP) and trustworthiness metrics (AUROC/AUPR for joint failure detection, AURC for risk--coverage, and ECE for calibration).}
+\label{tab:main}
+\begin{tabular}{lcccccc}
+\toprule
+Method & COCO AP $\uparrow$ & OCHuman AP $\uparrow$ & CrowdPose AP $\uparrow$ & AUROC $\uparrow$ & AURC $\downarrow$ & ECE $\downarrow$ \\
+\midrule
+Heatmap peak (baseline) \\
+Heatmap entropy (baseline) \\
+MC Dropout (baseline) \\
+Ours (Self-Verify) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation Studies}
+We quantify the contribution of each verification signal and the fusion strategy.
+\textbf{Table~\ref{tab:ablation}} reports reliability metrics for: (i) removing each module, (ii) single-signal variants, and (iii) fusion strategies (min/avg/learned).
+
+\begin{table}[t]
+\centering
+\caption{Ablation on self-verification signals.}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+Variant & AUROC $\uparrow$ & AUPR $\uparrow$ & AURC $\downarrow$ & ECE $\downarrow$ \\
+\midrule
+Cycle only \\
+Pseudo-view only \\
+IK solvability only \\
+Cycle + Pseudo-view \\
+Cycle + IK \\
+Pseudo-view + IK \\
+All (min fusion) \\
+All (avg fusion) \\
+All (learned fusion) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Robustness to Corruptions}
+We evaluate reliability degradation under increasing corruption severity on COCO val2017.
+We plot AUROC and AURC versus severity for each corruption type, and compare against confidence/uncertainty baselines.
+\textbf{Figure~\ref{fig:corruption}} shows representative curves.
+
+\subsection{Cross-Dataset Generalization}
+We test COCO-trained models on MPII (and PoseTrack if available) without finetuning to evaluate OOD reliability.
+We report AUROC/AURC and discuss typical failure modes where self-verification is particularly beneficial.
+
+\subsection{Qualitative Analysis}
+We visualize predicted poses with joint-level trust (e.g., color/opacity or dashed edges for low-trust limbs) on challenging scenes:
+occlusion, crowding, truncation, and unusual poses.
+We additionally report per-joint trust maps and failure case taxonomies.
+
+\subsection{Efficiency and Overhead}
+We report the runtime overhead of self-verification, including the verifier head and the IK solver.
+We discuss practical configurations (e.g., running IK only for low-trust candidates or using a small number of IK iterations) and their accuracy--reliability trade-offs.

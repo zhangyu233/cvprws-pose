@@ -1,0 +1,13 @@
+\begin{abstract}
+Human pose estimation models are typically evaluated by accuracy metrics, yet they often produce confident predictions even under severe occlusion, noise, or out-of-distribution conditions. In safety-critical applications, such behavior is undesirable, as erroneous poses are difficult to identify and may propagate to downstream systems.
+In this paper, we propose a self-verifying framework for human pose estimation that explicitly estimates joint-level trustworthiness alongside pose predictions.
+
+Our key insight is that unreliable joints exhibit instability when subjected to self-consistency tests, even in the absence of ground-truth visibility annotations.
+We introduce three complementary self-verification mechanisms: 
+(1) \emph{2D equivariant cycle consistency}, which measures prediction stability under geometric image transformations; 
+(2) \emph{pseudo-view agreement}, which enforces consistency across synthetic viewpoints induced by lifting 2D poses to 3D and reprojecting under random rotations; and 
+(3) \emph{kinematic solvability consistency}, which evaluates whether predicted poses can be explained by a differentiable inverse kinematics model with minimal joint effort.
+
+These signals jointly provide supervision for a verifier head that predicts joint-level trust scores without requiring additional annotations.
+Extensive experiments on standard and occlusion-heavy benchmarks demonstrate that our approach significantly improves failure detection, uncertainty calibration, and risk-aware pose estimation, while preserving competitive pose accuracy.
+\end{abstract}
