@@ -1,6 +1,8 @@
 # Single-GPU (32GB) friendly baseline config.
 # Inherits official RTMPose-S COCO top-down recipe (GT bbox by default).
 
+import os
+
 _base_ = 'mmpose::body_2d_keypoint/rtmpose/coco/rtmpose-s_8xb256-420e_coco-256x192.py'
 
 # ---- Data root (your COCO path, GT bbox) ----
@@ -70,3 +72,19 @@ default_hooks = dict(
         interval=1))
 
 work_dir = 'work_dirs/self_verify_pose/baseline'
+
+# ---- Optional Weights & Biases (wandb) logging ----
+# Enable by: USE_WANDB=1 (and `pip install wandb`, `wandb login`).
+_use_wandb = os.environ.get('USE_WANDB', '0') == '1'
+if _use_wandb:
+    vis_backends = [
+        dict(type='LocalVisBackend'),
+        dict(
+            type='WandbVisBackend',
+            init_kwargs=dict(
+                project=os.environ.get('WANDB_PROJECT', 'self_verify_pose'),
+                name=os.environ.get('WANDB_NAME', 'baseline_rtmpose_s'),
+            ),
+        ),
+    ]
+    visualizer = dict(type='PoseLocalVisualizer', vis_backends=vis_backends, name='visualizer')

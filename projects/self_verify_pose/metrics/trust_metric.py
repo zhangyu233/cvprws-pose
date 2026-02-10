@@ -122,7 +122,15 @@ class JointTrustMetric(BaseMetric):
                 continue
             if 'keypoints' not in pred or 'keypoints' not in gt:
                 continue
-            if 'bboxes' not in gt:
+
+            # In top-down pose, bbox information may be stored in pred_instances
+            # (copied from gt_instances by the estimator). Some datasets/pipelines
+            # may not keep `gt_instances.bboxes`.
+            if 'bboxes' in gt:
+                bbox_src = gt
+            elif 'bboxes' in pred:
+                bbox_src = pred
+            else:
                 continue
 
             # top-down: typically one instance per sample
@@ -131,7 +139,7 @@ class JointTrustMetric(BaseMetric):
 
             trust = pred.keypoint_trust[0].detach().cpu().numpy()
 
-            bbox = gt.bboxes[0].detach().cpu().numpy()
+            bbox = bbox_src.bboxes[0].detach().cpu().numpy()
             bbox_w = float(max(bbox[2] - bbox[0], 1.0))
             bbox_h = float(max(bbox[3] - bbox[1], 1.0))
             norm = max(bbox_w, bbox_h)

@@ -104,11 +104,34 @@ mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x
 bash projects/self_verify_pose/run_train_selfverify.sh
 ```
 
+### Monitoring (训练过程看指标)
+
+指标字段含义说明见：`docs/metrics_guide.md`
+
+训练过程中主要看两类输出：
+
+1) 终端/日志文件（实时）：
+- 日志文件位置：`work_dirs/self_verify_pose/selfverify_cycle/<timestamp>/<timestamp>.log`
+- 实时查看：
+```bash
+tail -f work_dirs/self_verify_pose/selfverify_cycle/*/*.log
+```
+
+2) 可画曲线的 JSON 标量日志（推荐做曲线对比）：
+- 文件位置：`work_dirs/.../<timestamp>/vis_data/<timestamp>.json`（每行一个 JSON，包含 loss/lr 等标量）
+- 画训练曲线（示例：loss + consistency + trust）：
+```bash
+python tools/analysis_tools/analyze_logs.py plot_curve \
+  work_dirs/self_verify_pose/selfverify_cycle/*/vis_data/*.json \
+  --keys loss loss_kpt loss_consistency_rot loss_trust rot_inconsistency_mean trust_pred_mean \
+  --out work_dirs/self_verify_pose/selfverify_cycle/train_curves.png
+```
+
 常用的快速覆盖（不改文件，直接命令行调参）：
 
 - 一条命令同时设置 batch_size / dataloader workers / persistent_workers / AMP / 梯度累积（常用于控显存 + 控速度）：
 ```bash
-mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
   --cfg-options \
   train_dataloader.batch_size=16 \
   train_dataloader.num_workers=4 \
@@ -122,26 +145,52 @@ mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
 
 - 只训 consistency，不训 trust：
 ```bash
-mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
   --cfg-options model.trust_cfg.enable=False
 ```
 
 - 只训 trust（不加 consistency；一般不建议，但你可以做 ablation）：
 ```bash
-mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
   --cfg-options model.consistency_cfg.enable=False
 ```
 
 - 冻结 backbone/neck/head（仅训练 trust_head；用于快速看 trust 是否能学到信号）：
 ```bash
-mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
   --cfg-options model.full_param_train=False
 ```
 
 - 调大旋转范围 / 调整 loss 权重：
 ```bash
-mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
   --cfg-options model.consistency_cfg.max_deg=45.0 model.consistency_cfg.loss_weight=0.5
+```
+
+### W&B (wandb)
+
+如果你想在网页端实时看训练曲线（loss/lr/自定义 consistency+trust 指标），可以用 wandb：
+
+1) 安装并登录：
+```bash
+pip install -U wandb
+wandb login
+```
+
+2) 用环境变量打开 W&B（不需要额外的 wandb 配置文件）：
+```bash
+USE_WANDB=1 \
+WANDB_PROJECT=self_verify_pose \
+WANDB_NAME=selfverify_cycle_rtmpose_s \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+  --work-dir work_dirs/self_verify_pose/selfverify_cycle
+```
+
+可选：离线模式（不上传，只落本地文件，之后可 `wandb sync`）：
+```bash
+USE_WANDB=1 WANDB_MODE=offline \
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+  --work-dir work_dirs/self_verify_pose/selfverify_cycle
 ```
 
 测试（COCO AP + trust metrics）：

@@ -1,6 +1,8 @@
 # Cycle-only self-verification skeleton (placeholder).
 # For now it only switches model type to a wrapper, baseline losses unchanged.
 
+import os
+
 _base_ = './baseline_rtmpose_s_1x32g_coco-256x192.py'
 
 # Import by absolute module path so you can run from repo root without
@@ -39,3 +41,19 @@ val_evaluator = [
 test_evaluator = val_evaluator
 
 work_dir = 'work_dirs/self_verify_pose/selfverify_cycle'
+
+# ---- Optional Weights & Biases (wandb) logging ----
+# Enable by: USE_WANDB=1 (and `pip install wandb`, `wandb login`).
+_use_wandb = os.environ.get('USE_WANDB', '0') == '1'
+if _use_wandb:
+    vis_backends = [
+        dict(type='LocalVisBackend'),
+        dict(
+            type='WandbVisBackend',
+            init_kwargs=dict(
+                project=os.environ.get('WANDB_PROJECT', 'self_verify_pose'),
+                name=os.environ.get('WANDB_NAME', 'selfverify_cycle_rtmpose_s'),
+            ),
+        ),
+    ]
+    visualizer = dict(type='PoseLocalVisualizer', vis_backends=vis_backends, name='visualizer')
