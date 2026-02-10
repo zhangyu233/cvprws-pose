@@ -3,7 +3,14 @@
 
 _base_ = './baseline_rtmpose_s_1x32g_coco-256x192.py'
 
-custom_imports = dict(imports=['models', 'metrics'], allow_failed_imports=False)
+# Import by absolute module path so you can run from repo root without
+# exporting PYTHONPATH to include projects/self_verify_pose.
+custom_imports = dict(
+    imports=[
+        'projects.self_verify_pose.models',
+        'projects.self_verify_pose.metrics',
+    ],
+    allow_failed_imports=False)
 
 # Only override model type; keep backbone/head/codec etc from baseline.
 model = dict(

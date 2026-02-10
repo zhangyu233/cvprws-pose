@@ -25,16 +25,17 @@
 说明：本配置不设置 `bbox_file`，因此 top-down 评测默认使用 GT bbox。
 
 ## Usage
-在本项目根目录执行（确保能 import 到 `models/`）：
+推荐直接从 MMPose 仓库根目录运行（不需要额外设置 PYTHONPATH）：
 
 ```bash
-cd projects/self_verify_pose
-export PYTHONPATH=$(pwd):$PYTHONPATH
+cd /code/mmpose
 ```
+
+说明：self-verify 配置已使用 `custom_imports=['projects.self_verify_pose.models', 'projects.self_verify_pose.metrics']`，所以从仓库根目录运行即可正常 import 到自定义模块。
 
 ### Train (single GPU, 32GB friendly)
 ```bash
-mim train mmpose configs/baseline_rtmpose_s_1x32g_coco-256x192.py
+mim train mmpose projects/self_verify_pose/configs/baseline_rtmpose_s_1x32g_coco-256x192.py
 ```
 
 说明：该 baseline 配置目前是 5 epoch 的快速 sanity run（每个 epoch 都会 val，并保存 checkpoint）。
@@ -48,14 +49,14 @@ baseline 关键可调参数（见 configs/baseline_rtmpose_s_1x32g_coco-256x192.
 先用官方 RTMPose-S 权重快速验证数据/评测链路：
 
 ```bash
-mim test mmpose configs/baseline_rtmpose_s_1x32g_coco-256x192.py \
+mim test mmpose projects/self_verify_pose/configs/baseline_rtmpose_s_1x32g_coco-256x192.py \
   --checkpoint /code/mmpose/checkpoints/rtmpose-s_simcc-coco_256x192.pth \
   --work-dir work_dirs/self_verify_pose/validate_pretrained
 ```
 
 ### Test
 ```bash
-mim test mmpose configs/baseline_rtmpose_s_1x32g_coco-256x192.py \
+mim test mmpose projects/self_verify_pose/configs/baseline_rtmpose_s_1x32g_coco-256x192.py \
   --checkpoint work_dirs/self_verify_pose/baseline_quick/EXP_NAME/latest.pth
 ```
 
@@ -94,7 +95,13 @@ self-verify 关键可调参数（在 config 的 model 字段里）：
 
 训练：
 ```bash
-mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py
+mim train mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+  --work-dir work_dirs/self_verify_pose/selfverify_cycle
+```
+
+或直接用脚本（推荐，开箱即跑）：
+```bash
+bash projects/self_verify_pose/run_train_selfverify.sh
 ```
 
 常用的快速覆盖（不改文件，直接命令行调参）：
@@ -139,8 +146,13 @@ mim train mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
 
 测试（COCO AP + trust metrics）：
 ```bash
-mim test mmpose configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
+mim test mmpose projects/self_verify_pose/configs/selfverify_cycle_rtmpose_s_1x32g_coco-256x192.py \
   --checkpoint work_dirs/self_verify_pose/selfverify_cycle/latest.pth
+```
+
+或用脚本：
+```bash
+bash projects/self_verify_pose/run_test_selfverify.sh work_dirs/self_verify_pose/selfverify_cycle/latest.pth
 ```
 
 提示：实际 ckpt 路径通常为 work_dir 下的 EXP_NAME 子目录（例如 epoch_1.pth / latest.pth / best_coco_AP*.pth）。
