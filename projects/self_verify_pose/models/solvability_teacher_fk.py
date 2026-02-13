@@ -34,9 +34,12 @@ class SolvabilityFKTeacher:
         w_reproj: float = 1.0,
         w_limits: float = 0.1,
         w_reg: float = 1e-4,
+        w_bone: float = 1e-3,
         alpha: float = 10.0,
         eps: float = 1e-6,
         detach: bool = True,
+        bone_scale_min: float = 0.5,
+        bone_scale_max: float = 1.5,
         device: Optional[torch.device] = None,
     ):
         self.num_iters = int(num_iters)
@@ -44,9 +47,12 @@ class SolvabilityFKTeacher:
         self.w_reproj = float(w_reproj)
         self.w_limits = float(w_limits)
         self.w_reg = float(w_reg)
+        self.w_bone = float(w_bone)
         self.alpha = float(alpha)
         self.eps = float(eps)
         self.detach = bool(detach)
+        self.bone_scale_min = float(bone_scale_min)
+        self.bone_scale_max = float(bone_scale_max)
         self.device = device
 
         try:
@@ -64,7 +70,7 @@ class SolvabilityFKTeacher:
         self._chain = pk.build_chain_from_urdf(urdf)
         self._chain_device: Optional[torch.device] = None
         if self.device is not None:
-          self._ensure_chain_device(self.device)
+            self._ensure_chain_device(self.device)
 
         # Order of joint parameters in the chain
         self._joint_names: List[str] = list(self._chain.get_joint_parameter_names())
@@ -79,6 +85,27 @@ class SolvabilityFKTeacher:
             'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
             'left_knee', 'right_knee', 'left_ankle', 'right_ankle',
         ]
+        self._link_parent_names = {
+            'nose': 'head',
+            'left_eye': 'head',
+            'right_eye': 'head',
+            'left_ear': 'head',
+            'right_ear': 'head',
+            'left_shoulder': 'neck',
+            'right_shoulder': 'neck',
+            'left_elbow': 'left_shoulder',
+            'right_elbow': 'right_shoulder',
+            'left_wrist': 'left_elbow',
+            'right_wrist': 'right_elbow',
+            'left_hip': 'root',
+            'right_hip': 'root',
+            'left_knee': 'left_hip',
+            'right_knee': 'right_hip',
+            'left_ankle': 'left_knee',
+            'right_ankle': 'right_knee',
+        }
+        self._bone_names = list(self._link_names_coco17)
+        self._num_bones = len(self._bone_names)
 
         # Joint limits in radians in the same order as self._joint_names.
         # These are heuristic and mainly to keep IK stable.
@@ -102,9 +129,9 @@ class SolvabilityFKTeacher:
         if self._chain_device == device:
             return
         if hasattr(self._chain, 'to'):
-          # pytorch_kinematics.Chain.to interprets a single positional arg as
-          # dtype, so we must pass device as a keyword.
-          self._chain = self._chain.to(device=device)
+            # pytorch_kinematics.Chain.to interprets a single positional arg as
+            # dtype, so we must pass device as a keyword.
+            self._chain = self._chain.to(device=device)
         self._chain_device = device
 
     def _limits_penalty(self, theta: Tensor) -> Tensor:
@@ -135,23 +162,50 @@ class SolvabilityFKTeacher:
         t = mean_2d.clone().detach().requires_grad_(True)  # (B,2)
         scale = torch.ones((b, 1), device=device, dtype=torch.float32, requires_grad=True)
 
+        bone_scale = torch.ones(
+            (b, self._num_bones),
+            device=device,
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+
         theta = torch.zeros((b, self._dof), device=device, dtype=torch.float32, requires_grad=True)
 
-        opt = torch.optim.Adam([theta, s, t, scale], lr=self.lr)
+        opt = torch.optim.Adam([theta, s, t, scale, bone_scale], lr=self.lr)
 
         for _ in range(self.num_iters):
             # FK
             th_dict = {n: theta[:, i] for i, n in enumerate(self._joint_names)}
             fk = self._chain.forward_kinematics(th_dict)
 
-            # Gather COCO-17 joint 3D positions from link frames
-            pts3d = []
+            # Gather joint 3D positions from link frames
+            def _pos(name: str) -> Tensor:
+                if name not in fk:
+                    raise KeyError(f'FK output missing link: {name}')
+                return fk[name].get_matrix()[:, :3, 3]
+
+            base = {
+                'root': _pos('root'),
+                'neck': _pos('neck'),
+                'head': _pos('head'),
+            }
             for ln in self._link_names_coco17:
-                if ln not in fk:
-                    raise KeyError(f'FK output missing link: {ln}')
-                mat = fk[ln].get_matrix()  # (B,4,4)
-                pts3d.append(mat[:, :3, 3])
-            p = torch.stack(pts3d, dim=1)  # (B,17,3)
+                base[ln] = _pos(ln)
+
+            scaled = {
+                'root': base['root'],
+                'neck': base['neck'],
+                'head': base['head'],
+            }
+            for i, ln in enumerate(self._bone_names):
+                parent = self._link_parent_names[ln]
+                parent_base = base[parent]
+                parent_scaled = scaled[parent] if parent in scaled else base[parent]
+                vec = base[ln] - parent_base
+                s_bone = bone_scale[:, i].unsqueeze(-1)
+                scaled[ln] = parent_scaled + s_bone * vec
+
+            p = torch.stack([scaled[ln] for ln in self._link_names_coco17], dim=1)
 
             p = p * scale.unsqueeze(1)
             proj = s.unsqueeze(-1) * p[..., :2] + t.unsqueeze(1)
@@ -161,8 +215,14 @@ class SolvabilityFKTeacher:
 
             loss_lim = self._limits_penalty(theta).mean()
             loss_reg = (theta * theta).mean() + ((scale - 1.0) ** 2).mean()
+            loss_bone = ((bone_scale - 1.0) ** 2).mean()
 
-            loss = self.w_reproj * loss_reproj + self.w_limits * loss_lim + self.w_reg * loss_reg
+            loss = (
+                self.w_reproj * loss_reproj
+                + self.w_limits * loss_lim
+                + self.w_reg * loss_reg
+                + self.w_bone * loss_bone
+            )
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -171,15 +231,39 @@ class SolvabilityFKTeacher:
             with torch.no_grad():
                 s.clamp_(min=1e-3)
                 scale.clamp_(min=1e-3)
+                bone_scale.clamp_(min=self.bone_scale_min, max=self.bone_scale_max)
 
         with torch.no_grad():
             th_dict = {n: theta[:, i] for i, n in enumerate(self._joint_names)}
             fk = self._chain.forward_kinematics(th_dict)
-            pts3d = []
+            def _pos(name: str) -> Tensor:
+                if name not in fk:
+                    raise KeyError(f'FK output missing link: {name}')
+                return fk[name].get_matrix()[:, :3, 3]
+
+            base = {
+                'root': _pos('root'),
+                'neck': _pos('neck'),
+                'head': _pos('head'),
+            }
             for ln in self._link_names_coco17:
-                mat = fk[ln].get_matrix()
-                pts3d.append(mat[:, :3, 3])
-            p = torch.stack(pts3d, dim=1) * scale.unsqueeze(1)
+                base[ln] = _pos(ln)
+
+            scaled = {
+                'root': base['root'],
+                'neck': base['neck'],
+                'head': base['head'],
+            }
+            for i, ln in enumerate(self._bone_names):
+                parent = self._link_parent_names[ln]
+                parent_base = base[parent]
+                parent_scaled = scaled[parent] if parent in scaled else base[parent]
+                vec = base[ln] - parent_base
+                s_bone = bone_scale[:, i].unsqueeze(-1)
+                scaled[ln] = parent_scaled + s_bone * vec
+
+            p = torch.stack([scaled[ln] for ln in self._link_names_coco17], dim=1)
+            p = p * scale.unsqueeze(1)
             proj = s.unsqueeze(-1) * p[..., :2] + t.unsqueeze(1)
             err = torch.sqrt(((proj - kpts_2d) ** 2).sum(dim=-1) + self.eps)
             energy = (err * vis).sum(dim=-1) / (vis.sum(dim=-1).clamp_min(1.0))
