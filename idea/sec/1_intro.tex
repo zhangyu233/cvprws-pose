@@ -1,46 +1,84 @@
 \section{Introduction}
 \label{sec:intro}
 
-Human pose estimation has made remarkable progress in recent years, driven by powerful architectures and large-scale datasets.
-Modern models achieve impressive accuracy on standard benchmarks and are widely deployed in applications ranging from human--computer interaction to robotics and healthcare.
-Despite this progress, a fundamental limitation remains largely unaddressed: pose estimators often produce confident predictions even when visual evidence is weak, ambiguous, or entirely absent.
+Human pose estimation has reached impressive performance on standard benchmarks,
+yet high accuracy does not imply reliability.
+Modern estimators frequently produce confident predictions
+even when visual evidence is weak, ambiguous, or absent.
+Under occlusion, truncation, or distribution shift,
+models may hallucinate geometrically plausible joints
+that silently propagate errors to downstream systems
+such as action recognition, autonomous driving, or clinical analysis.
 
-This behavior is particularly problematic in safety-critical settings.
-Under occlusion, motion blur, or out-of-distribution conditions, a pose estimator may hallucinate plausible-looking joints that are in fact incorrect.
-Such errors are difficult to detect from accuracy metrics alone and may silently propagate to downstream systems, leading to catastrophic failures.
-These observations raise a crucial yet underexplored question:
-\emph{can a pose estimation model assess whether its own predictions should be trusted?}
-\cite{}
+The central challenge is therefore not only accuracy,
+but \emph{trustworthiness}:
+when should a predicted pose be believed?
 
-Existing approaches implicitly assume that prediction confidence correlates with correctness.
-Common heuristics, such as heatmap sharpness or prediction variance, are often used as proxies for reliability.
-However, these signals are fundamentally limited, as a model can be highly confident in its hallucinations.
-Moreover, most prior work treats reliability estimation as a byproduct of pose prediction, rather than as a first-class problem in its own right.
+Existing approaches attempt to answer this question through uncertainty estimation.
+Heatmap peak responses~\cite{}, Monte Carlo dropout~\cite{}, and deep ensembles~\cite{}
+measure dispersion within the model's representational space.
+However, high confidence does not guarantee geometric validity.
+A sharply peaked heatmap may correspond to an anatomically inconsistent configuration,
+and multiple models may agree on a hallucinated joint.
+Such methods quantify how certain the model is,
+but not whether the prediction admits a physically coherent explanation.
 
-In this work, we argue that pose trustworthiness cannot be reliably inferred from a single forward pass.
-Instead, reliability should be assessed through \emph{self-verification}: a pose prediction should be subjected to a series of consistency and solvability tests that probe whether it is stable, geometrically coherent, and physically explainable.
-Crucially, such verification must operate without additional supervision, as ground-truth visibility or trust annotations are rarely available.
+A parallel line of work incorporates 3D reasoning and kinematic constraints
+to improve pose accuracy,
+including reprojection losses, inverse kinematics solvers,
+and structured human body models.
+These methods enforce geometric plausibility during training or inference,
+yet they are primarily designed to refine predictions,
+not to evaluate whether a prediction itself should be trusted.
 
-Our key insight is that unreliable joints exhibit characteristic failure patterns under self-verification.
-While hallucinated joints may appear stable within a single image, they tend to break equivariance under geometric transformations, become inconsistent across viewpoints, or require implausible articulations to explain.
-Conversely, reliable joints remain stable under transformations that preserve the underlying human configuration.
+In this work,  we connect these two perspectives. We ground pose trustworthiness in the geometry of the underlying inverse problem.
+Every 2D pose implicitly asserts the existence of a 3D body configuration
+that reproduces the observed joints under projection.
+Trust should therefore be evaluated through the properties of this implied 3D explanation.
 
-Based on this insight, we propose a self-verifying framework for human pose estimation that explicitly estimates joint-level trustworthiness alongside pose predictions.
-Rather than imposing additional constraints during inference, we derive supervisory signals for trust estimation by probing the internal consistency of the model's own predictions.
+We cast 3D pose recovery as a regularized inverse kinematics (IK) problem
+and derive two complementary criteria from its solution.
 
-Specifically, we introduce three complementary self-verification mechanisms.
-First, we evaluate \emph{2D equivariant cycle consistency}, measuring whether predicted joints transform consistently under geometric image augmentations.
-Second, we assess \emph{pseudo-view agreement} by lifting predicted poses to 3D and enforcing consistency across synthetic viewpoints induced by random rotations.
-These two signals expose instability and geometric inconsistency that are invisible to single-view confidence measures.
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=2pt]
+\item \textbf{Solvability.}
+A predicted 2D pose is unreliable if no physically plausible 3D configuration can reproduce it.
+We measure whether a low-energy IK solution exists,
+and interpret large reprojection residuals as geometric inconsistency.
 
-Third, and most importantly, we introduce \emph{kinematic solvability consistency}.
-Instead of enforcing kinematic constraints as priors, we treat kinematics as an explanatory test.
-We ask whether a predicted pose can be explained by a physically plausible articulation with minimal joint effort through a differentiable inverse kinematics model.
-Poses that admit such explanations are deemed trustworthy, while hallucinated joints require excessive deformation or remain unexplained.
+\item \textbf{Identifiability.}
+Even when a low-energy solution exists,
+the inverse problem may be ill-conditioned:
+distinct 3D configurations can project to nearly identical 2D poses.
+Using the implicit function theorem,
+we show that the sensitivity of the optimal 3D solution
+to infinitesimal perturbations of the input joints
+is governed by the inverse Hessian of the IK objective.
+High sensitivity indicates poor conditioning,
+revealing joints that are weakly constrained by the observation,
+even if reconstruction error is small.
+\end{enumerate}
 
-The three self-verification signals provide complementary perspectives on pose reliability.
-We conservatively fuse them to generate joint-level pseudo trust labels, which supervise a lightweight verifier head without requiring additional annotations.
-The resulting model predicts both pose and joint-wise trust, enabling selective prediction, failure detection, and risk-aware pose estimation.
+Solvability and identifiability capture fundamentally different failure modes.
+A joint may be solvable yet weakly identified (e.g., depth-ambiguous limbs),
+or identifiable yet unsolvable (e.g., joints outside the kinematic workspace).
+Requiring both conditions yields a conservative and geometrically grounded trust measure.
 
-Extensive experiments demonstrate that our approach substantially improves failure detection and uncertainty calibration under occlusion and out-of-distribution conditions, while maintaining competitive pose accuracy.
-By reframing reliability as a self-verification problem, we provide a principled and annotation-free pathway toward trustworthy human pose estimation.
+Our framework requires no additional supervision.
+Both trust signals are derived from the model's own predictions
+and the kinematic structure of the human body.
+A lightweight verifier head learns to regress joint-level trust scores
+from these self-generated signals,
+incurring negligible inference overhead.
+
+Our contributions are as follows:
+\begin{itemize}[leftmargin=*,itemsep=2pt,topsep=2pt]
+\item We reinterpret pose trustworthiness as a property of the inverse problem underlying 3D explanation,
+      distinguishing solvability (existence) and identifiability (conditioning).
+\item We derive a conditioning-based characterization of joint reliability
+      through the inverse Hessian of the IK objective,
+      together with an efficient finite-difference approximation.
+\item We demonstrate on COCO, OCHuman, and CrowdPose
+      that our approach substantially improves failure detection
+      and risk-aware pose selection under occlusion and distribution shift,
+      while preserving competitive accuracy.
+\end{itemize}

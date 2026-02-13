@@ -72,7 +72,38 @@
 - **trust/Acc@0.5**：用阈值 0.5 把 trust 二值化后，与 correct 标签比对得到的 accuracy。
 - **trust/PosRate**：correct=1 的比例（数据分布），用于辅助解读 AUROC/AUPR。
 
-## 5. 如何在 W&B 面板里更好地看
+## 5. 你现在在 “test” 上到底测了哪些指标？
+
+在当前项目配置里（`test_evaluator = val_evaluator`），`mim test` 默认是在 **COCO val2017** 上做最终评测留档（不是 COCO test-dev）。因此 test 阶段会输出两大类指标：
+
+### 5.1 姿态指标（来自 CocoMetric）
+
+你会在终端看到这些 key（并写入 `vis_data/*.json` / W&B）：
+
+- `coco/AP`
+- `coco/AP .5`
+- `coco/AP .75`
+- `coco/AP (M)`, `coco/AP (L)`
+- `coco/AR`
+- `coco/AR .5`
+- `coco/AR .75`
+- `coco/AR (M)`, `coco/AR (L)`
+
+### 5.2 可信度指标（来自 JointTrustMetric）
+
+只要模型在 `predict()` 时写出了 `pred_instances.keypoint_trust`，test 阶段会额外输出：
+
+- `trust/AUROC`
+- `trust/AUPR`
+- `trust/ECE`
+- `trust/Acc@0.5`
+- `trust/PosRate`
+
+这些 trust 指标同样会在 `mim test` 的最终汇总行中出现，例如：
+
+`Epoch(test) ... coco/AP: ... trust/AUROC: ... trust/AUPR: ...`
+
+## 6. 如何在 W&B 面板里更好地看
 
 - **train 曲线**：用 `loss / loss_kpt / loss_consistency_rot / loss_trust` 看训练是否稳定。
 - **val 点**：用 `coco/AP`（以及 `trust/*`）看真正的效果变化。

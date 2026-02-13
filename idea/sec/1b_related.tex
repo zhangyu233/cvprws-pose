@@ -1,0 +1,90 @@
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Uncertainty Estimation in Pose Estimation.}
+%
+Modern 2D pose estimators,
+from convolutional architectures such as
+Stacked Hourglass~\cite{}, SimpleBaseline~\cite{}, and HRNet~\cite{}
+to transformer-based designs including ViTPose~\cite{} and TokenPose~\cite{},
+achieve strong accuracy on standard benchmarks
+yet offer limited mechanisms for assessing prediction reliability.
+The most common proxy is the peak response of predicted heatmaps~\cite{},
+which reflects model confidence but not geometric validity.
+At the aleatoric level,
+sigma-regression heads~\cite{} learn per-joint variance alongside coordinates.
+At the epistemic level,
+Monte Carlo dropout~\cite{} and deep ensembles~\cite{}
+estimate predictive dispersion through multiple stochastic or independent forward passes.
+More recently, normalizing flows~\cite{} and diffusion-based models~\cite{}
+have been proposed to capture multimodal joint distributions.
+While these methods quantify dispersion within the model's representational space,
+high confidence does not necessarily imply geometric validity,
+and low variance does not guarantee physical consistency.
+In particular, predictive uncertainty does not explicitly account for
+whether a pose admits a stable 3D interpretation---the
+question our framework is designed to answer.
+
+\paragraph{Geometric and 3D-Constrained Pose Estimation.}
+%
+A large body of work incorporates 3D reasoning into pose estimation.
+Direct 3D regression~\cite{} and graph-based lifting networks~\cite{}
+recover 3D poses from 2D detections,
+while parametric body models such as SMPL~\cite{} and STAR~\cite{}
+provide a differentiable kinematic representation of the human body.
+Inverse kinematics solvers,
+including the differentiable formulation in HybrIK~\cite{},
+and reprojection-based self-supervision~\cite{}
+enforce geometric plausibility during training or inference.
+Test-time augmentation~\cite{} and cycle-consistency checks~\cite{}
+similarly exploit equivariance or reconstruction agreement
+to refine or filter predictions.
+These approaches improve accuracy
+by constraining predictions to lie on a kinematic manifold.
+However, their primary objective is refinement rather than reliability assessment.
+They evaluate whether a pose is plausible,
+but do not analyze the conditioning of the inverse mapping
+from 2D observations to 3D articulation.
+As a result, they cannot distinguish between well-identified solutions
+and geometrically ambiguous configurations that happen to achieve low reprojection error.
+
+\paragraph{Failure Detection and Risk-Aware Vision.}
+%
+Selective prediction,
+originating from the ``reject option'' in classification~\cite{},
+allows a model to abstain when uncertain.
+Risk-coverage analysis~\cite{} evaluates
+how prediction quality improves as low-confidence outputs are removed.
+Confidence calibration~\cite{},
+learned failure predictors~\cite{},
+and out-of-distribution detectors~\cite{}
+have been applied across vision tasks.
+In pose estimation, failure detection has been explored
+through confidence thresholding and heuristic geometric checks.
+Yet these approaches typically rely on output magnitude
+or require ground-truth failure labels for supervision,
+rather than exploiting the geometric structure of the underlying inverse problem.
+Our work derives trust signals
+from the local conditioning of the 3D explanation itself,
+requiring no additional annotations.
+
+\paragraph{Inverse Problems and Conditioning.}
+%
+In classical inverse-problem theory~\cite{},
+solution quality is characterized not only by residual error
+but also by the conditioning of the forward operator.
+Ill-conditioned problems are known to amplify observation noise,
+yielding unstable solutions even when residuals are small.
+This perspective has informed degeneracy analysis
+in structure from motion~\cite{},
+observability studies in visual-inertial odometry~\cite{},
+and conditioning diagnostics for neural radiance fields~\cite{}.
+For human pose, the depth ambiguity inherent in monocular 3D lifting
+has long been recognized~\cite{},
+but it is typically addressed by adding priors or multi-view constraints
+rather than being quantified as a per-joint trust signal.
+Our identifiability criterion formalizes this intuition:
+we measure the sensitivity of the IK solution to input perturbations
+and interpret ill-conditioning as geometric unreliability,
+providing---to our knowledge---the first explicit use of conditioning analysis
+as a trustworthiness measure for human pose estimation.

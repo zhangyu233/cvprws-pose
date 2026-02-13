@@ -12,6 +12,8 @@ from mmpose.registry import MODELS
 from mmpose.utils.typing import (ConfigType, OptConfigType, OptMultiConfig,
                                  SampleList)
 
+from .solvability_teacher import SolvabilityTeacher
+
 
 @MODELS.register_module()
 class SelfVerifyTopdownPoseEstimator(TopdownPoseEstimator):
@@ -34,6 +36,7 @@ class SelfVerifyTopdownPoseEstimator(TopdownPoseEstimator):
                  trust_head: Optional[dict] = None,
                  trust_cfg: Optional[dict] = None,
                  consistency_cfg: Optional[dict] = None,
+                 solvability_cfg: Optional[dict] = None,
                  full_param_train: bool = True):
         super().__init__(
             backbone=backbone,
@@ -47,8 +50,11 @@ class SelfVerifyTopdownPoseEstimator(TopdownPoseEstimator):
 
         self.trust_cfg = trust_cfg or {}
         self.consistency_cfg = consistency_cfg or {}
+        self.solvability_cfg = solvability_cfg or {}
         self.with_trust = trust_head is not None
         self.trust_head = MODELS.build(trust_head) if self.with_trust else None
+
+        self._solv_teacher = None
 
         # Training control: by default we finetune the whole model.
         # If set to False, we freeze backbone/neck/head and only train trust_head.
@@ -243,21 +249,67 @@ class SelfVerifyTopdownPoseEstimator(TopdownPoseEstimator):
         return loss_consistency, inconsistency.detach(), pseudo_trust
 
     def loss(self, inputs: Tensor, data_samples: SampleList) -> dict:
-        losses = super().loss(inputs, data_samples)
+        pose_loss_enabled = bool(self.trust_cfg.get('pose_loss', True))
+        losses = super().loss(inputs, data_samples) if pose_loss_enabled else {}
 
         consistency_enabled = bool(self.consistency_cfg.get('enable', False))
+        solvability_enabled = bool(self.solvability_cfg.get('enable', False))
         trust_enabled = bool(self.with_trust and self.trust_cfg.get('enable', False))
 
         loss_cons = None
         inconsistency = None
         pseudo_trust = None
 
-        if consistency_enabled or trust_enabled:
-            # If trust is enabled, we also need pseudo_trust, which is derived
-            # from the same rotation inconsistency signal.
-            if consistency_enabled or trust_enabled:
-                loss_cons, inconsistency, pseudo_trust = self._compute_rot_consistency(
-                    inputs, data_samples)
+        pseudo_trust_sol = None
+        solv_err = None
+        solv_energy = None
+
+        # --- Rotation consistency pseudo-trust (optional) ---
+        if consistency_enabled or (trust_enabled and self.trust_cfg.get('source', 'consistency') == 'consistency'):
+            loss_cons, inconsistency, pseudo_trust = self._compute_rot_consistency(
+                inputs, data_samples)
+
+        # --- Solvability pseudo-trust via simple IK-style teacher (optional) ---
+        if solvability_enabled or (trust_enabled and self.trust_cfg.get('source', 'consistency') == 'solvability'):
+            # Decode 2D predictions in input space (pixels)
+            feats = self.extract_feat(inputs)
+            pred_x, pred_y = self.head.forward(feats)
+            split_ratio = float(getattr(self.head, 'simcc_split_ratio', 1.0))
+            x_locs = torch.argmax(pred_x, dim=-1).to(dtype=inputs.dtype)
+            y_locs = torch.argmax(pred_y, dim=-1).to(dtype=inputs.dtype)
+            kpts_xy = torch.stack([x_locs, y_locs], dim=-1) / split_ratio  # (B,K,2)
+
+            vis = None
+            if self.solvability_cfg.get('use_gt_visible', True):
+                vis_list = []
+                for ds in data_samples:
+                    if hasattr(ds, 'gt_instances') and 'keypoints_visible' in ds.gt_instances:
+                        kv = ds.gt_instances.keypoints_visible
+                        if isinstance(kv, np.ndarray):
+                            kv = torch.from_numpy(kv)
+                        vis_list.append(kv[0].to(device=kpts_xy.device, dtype=kpts_xy.dtype))
+                    else:
+                        vis_list.append(torch.ones((kpts_xy.size(1),), device=kpts_xy.device, dtype=kpts_xy.dtype))
+                vis = torch.stack(vis_list, dim=0)
+
+            if self._solv_teacher is None:
+                cfg = self.solvability_cfg
+                self._solv_teacher = SolvabilityTeacher(
+                    num_iters=int(cfg.get('num_iters', 15)),
+                    lr=float(cfg.get('lr', 0.05)),
+                    w_reproj=float(cfg.get('w_reproj', 1.0)),
+                    w_bone=float(cfg.get('w_bone', 10.0)),
+                    w_angle=float(cfg.get('w_angle', 1.0)),
+                    w_reg=float(cfg.get('w_reg', 1e-3)),
+                    alpha=float(cfg.get('alpha', 10.0)),
+                    detach=bool(cfg.get('detach', True)),
+                    use_gt_visible=bool(cfg.get('use_gt_visible', True)),
+                )
+
+            out = self._solv_teacher.compute(kpts_xy, visible=vis)
+            pseudo_trust_sol = out.pseudo_trust
+            solv_err = out.reproj_err
+            solv_energy = out.energy
 
         # Rotation equivariance consistency (2D rotation)
         if consistency_enabled and loss_cons is not None:
@@ -265,18 +317,42 @@ class SelfVerifyTopdownPoseEstimator(TopdownPoseEstimator):
             losses['rot_inconsistency_mean'] = inconsistency.mean()
             losses['pseudo_trust_mean'] = pseudo_trust.mean()
 
+        if solvability_enabled and pseudo_trust_sol is not None:
+            losses['solv_reproj_err_mean'] = solv_err.mean()
+            losses['solv_energy_mean'] = solv_energy.mean()
+            losses['pseudo_trust_sol_mean'] = pseudo_trust_sol.mean()
+
         # Trust head supervised by pseudo trust (from consistency)
         if trust_enabled:
             feats = self.extract_feat(inputs)
             feat = self._as_last_feat(feats)
             trust_pred = self.trust_head(feat)  # (B,K) in [0,1]
 
-            if pseudo_trust is not None:
+            src = str(self.trust_cfg.get('source', 'consistency'))
+            if src == 'solvability_cached':
+                cached = []
+                ok = True
+                for ds in data_samples:
+                    if hasattr(ds, 'gt_instances') and 'pseudo_trust_sol' in ds.gt_instances:
+                        v = ds.gt_instances.pseudo_trust_sol
+                        if isinstance(v, np.ndarray):
+                            v = torch.from_numpy(v)
+                        cached.append(v[0].to(device=trust_pred.device, dtype=trust_pred.dtype))
+                    else:
+                        ok = False
+                        break
+                teacher = torch.stack(cached, dim=0) if ok else None
+            elif src == 'solvability':
+                teacher = pseudo_trust_sol
+            else:
+                teacher = pseudo_trust
+
+            if teacher is not None:
                 if self.trust_cfg.get('detach_pseudo', True):
-                    pseudo_trust = pseudo_trust.detach()
+                    teacher = teacher.detach()
                 loss_w = float(self.trust_cfg.get('loss_weight', 1.0))
                 losses['loss_trust'] = F.binary_cross_entropy(
-                    trust_pred, pseudo_trust) * loss_w
+                    trust_pred, teacher) * loss_w
                 losses['trust_pred_mean'] = trust_pred.mean().detach()
 
         return losses

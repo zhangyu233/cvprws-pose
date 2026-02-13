@@ -101,26 +101,82 @@ class JointTrustMetric(BaseMetric):
         prefix (str): metric name prefix.
     """
 
+    default_prefix = 'trust'
+
     def __init__(self,
                  dist_thr: float = 0.05,
                  num_bins: int = 15,
-                 prefix: str = 'trust',
+                 prefix: Optional[str] = None,
                  collect_device: str = 'cpu'):
-        super().__init__(collect_device=collect_device)
+        super().__init__(collect_device=collect_device, prefix=prefix)
         self.dist_thr = float(dist_thr)
         self.num_bins = int(num_bins)
-        self.prefix = str(prefix)
 
     def process(self, data_batch: dict, data_samples: Sequence) -> None:
         for ds in data_samples:
-            if not hasattr(ds, 'pred_instances') or not hasattr(ds, 'gt_instances'):
+            # NOTE: In MMPose evaluation, PoseDataSample is converted to dict
+            # (see MultiDatasetEvaluator), so `ds` is usually a dict.
+            if isinstance(ds, dict):
+                pred = ds.get('pred_instances', None)
+                gt = ds.get('gt_instances', None)
+                raw_ann_info = ds.get('raw_ann_info', None)
+            else:
+                if not hasattr(ds, 'pred_instances') or not hasattr(ds, 'gt_instances'):
+                    continue
+                pred = ds.pred_instances
+                gt = ds.gt_instances
+                raw_ann_info = None
+                if hasattr(ds, 'metainfo') and isinstance(ds.metainfo, dict):
+                    raw_ann_info = ds.metainfo.get('raw_ann_info', None)
+
+            if pred is None or gt is None:
                 continue
-            pred = ds.pred_instances
-            gt = ds.gt_instances
 
             if 'keypoint_trust' not in pred:
                 continue
-            if 'keypoints' not in pred or 'keypoints' not in gt:
+
+            if 'keypoints' not in pred:
+                continue
+
+            def _to_numpy(x):
+                if x is None:
+                    return None
+                if hasattr(x, 'detach'):
+                    return x.detach().cpu().numpy()
+                return np.asarray(x)
+
+            # Get GT keypoints.
+            # In some test/val pipelines, GT keypoints may not be packed into
+            # `gt_instances` (because COCO metric reads GT from ann_file).
+            gt_kpts_xy = None
+            gt_vis = None
+            if 'keypoints' in gt:
+                # May be numpy arrays (packed without tensor conversion).
+                gt_kpts = _to_numpy(gt['keypoints'] if isinstance(gt, dict) else gt.keypoints)
+                if gt_kpts is not None:
+                    gt_kpts = np.asarray(gt_kpts)
+                    if gt_kpts.ndim == 3:
+                        gt_kpts_xy = gt_kpts[0, :, :2]
+                    elif gt_kpts.ndim == 2:
+                        gt_kpts_xy = gt_kpts[:, :2]
+
+                if 'keypoints_visible' in gt:
+                    vis_src = gt['keypoints_visible'] if isinstance(gt, dict) else gt.keypoints_visible
+                    vis = _to_numpy(vis_src)
+                    if vis is not None:
+                        vis = np.asarray(vis)
+                        gt_vis = vis[0] if vis.ndim == 2 else vis
+            else:
+                # Fallback: raw annotation in metainfo / dict root
+                raw = raw_ann_info
+                if isinstance(raw, (list, tuple)) and len(raw) > 0:
+                    raw = raw[0]
+                if isinstance(raw, dict) and 'keypoints' in raw:
+                    kp = np.asarray(raw['keypoints'], dtype=np.float32).reshape(-1, 3)
+                    gt_kpts_xy = kp[:, :2]
+                    gt_vis = kp[:, 2]
+
+            if gt_kpts_xy is None:
                 continue
 
             # In top-down pose, bbox information may be stored in pred_instances
@@ -134,23 +190,32 @@ class JointTrustMetric(BaseMetric):
                 continue
 
             # top-down: typically one instance per sample
-            pred_kpts = pred.keypoints[0, :, :2].detach().cpu().numpy()
-            gt_kpts = gt.keypoints[0, :, :2].detach().cpu().numpy()
+            pred_kpts_all = _to_numpy(pred['keypoints'] if isinstance(pred, dict) else pred.keypoints)
+            if pred_kpts_all is None:
+                continue
+            pred_kpts = np.asarray(pred_kpts_all)[0, :, :2]
 
-            trust = pred.keypoint_trust[0].detach().cpu().numpy()
+            trust_all = _to_numpy(pred['keypoint_trust'] if isinstance(pred, dict) else pred.keypoint_trust)
+            if trust_all is None:
+                continue
+            trust = np.asarray(trust_all)
+            if trust.ndim == 2:
+                trust = trust[0]
 
-            bbox = bbox_src.bboxes[0].detach().cpu().numpy()
+            bbox_all = _to_numpy(bbox_src['bboxes'] if isinstance(bbox_src, dict) else bbox_src.bboxes)
+            if bbox_all is None:
+                continue
+            bbox = np.asarray(bbox_all)[0]
             bbox_w = float(max(bbox[2] - bbox[0], 1.0))
             bbox_h = float(max(bbox[3] - bbox[1], 1.0))
             norm = max(bbox_w, bbox_h)
 
-            if 'keypoints_visible' in gt:
-                vis = gt.keypoints_visible[0].detach().cpu().numpy().astype(np.float64)
-                vis_mask = vis > 0
+            if gt_vis is not None:
+                vis_mask = np.asarray(gt_vis, dtype=np.float64) > 0
             else:
                 vis_mask = np.ones((pred_kpts.shape[0],), dtype=bool)
 
-            dist = np.sqrt(((pred_kpts - gt_kpts)**2).sum(axis=-1))
+            dist = np.sqrt(((pred_kpts - gt_kpts_xy)**2).sum(axis=-1))
             y_true = (dist <= self.dist_thr * norm).astype(np.int64)
             y_score = np.clip(trust.astype(np.float64), 0.0, 1.0)
 
@@ -170,10 +235,10 @@ class JointTrustMetric(BaseMetric):
         y_score = np.concatenate([r[1] for r in results], axis=0)
 
         out = {
-            f'{self.prefix}/AUROC': _binary_auc_roc(y_true, y_score),
-            f'{self.prefix}/AUPR': _binary_average_precision(y_true, y_score),
-            f'{self.prefix}/ECE': _ece(y_true, y_score, num_bins=self.num_bins),
-            f'{self.prefix}/Acc@0.5': float(((y_score >= 0.5) == (y_true == 1)).mean()),
-            f'{self.prefix}/PosRate': float((y_true == 1).mean()),
+            'AUROC': _binary_auc_roc(y_true, y_score),
+            'AUPR': _binary_average_precision(y_true, y_score),
+            'ECE': _ece(y_true, y_score, num_bins=self.num_bins),
+            'Acc@0.5': float(((y_score >= 0.5) == (y_true == 1)).mean()),
+            'PosRate': float((y_true == 1).mean()),
         }
         return out
